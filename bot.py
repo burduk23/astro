@@ -5,6 +5,7 @@ from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiohttp import ClientSession
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
@@ -15,6 +16,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ASTROPROXY_API_KEY = os.getenv("ASTROPROXY_API_KEY")
 TELEGRAM_USER_ID = os.getenv("TELEGRAM_USER_ID")
+PROXY_URL = os.getenv("PROXY_URL") # Optional proxy for Telegram API
 
 if not all([BOT_TOKEN, ASTROPROXY_API_KEY, TELEGRAM_USER_ID]):
     raise ValueError("Please provide BOT_TOKEN, ASTROPROXY_API_KEY, and TELEGRAM_USER_ID in .env file")
@@ -23,9 +25,12 @@ if not all([BOT_TOKEN, ASTROPROXY_API_KEY, TELEGRAM_USER_ID]):
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize bot and dispatcher
-bot = Bot(token=BOT_TOKEN)
+# Initialize bot and dispatcher with optional proxy to prevent Timeout errors
+# In cases where api.telegram.org is blocked, use PROXY_URL (e.g. http://proxy:port)
+session = AiohttpSession(proxy=PROXY_URL) if PROXY_URL else None
+bot = Bot(token=BOT_TOKEN, session=session)
 dp = Dispatcher()
+
 
 ASTRO_API_URL = "https://astroproxy.com/api/v1/referrals"
 

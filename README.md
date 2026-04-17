@@ -47,8 +47,30 @@ nano .env
 - `BOT_TOKEN`: Токен вашего Telegram бота.
 - `ASTROPROXY_API_KEY`: Ваш API ключ Astroproxy.
 - `TELEGRAM_USER_ID`: Ваш числовой Telegram ID.
+- `PROXY_URL`: (Опционально) URL прокси, если сервер не может подключиться к Telegram напрямую.
 
-### 5. Настройка автозапуска через Systemd
+---
+
+## Устранение неполадок
+
+### Ошибка: Request timeout error
+Если при запуске бота вы видите ошибку `aiogram.exceptions.TelegramNetworkError: Request timeout error`, это означает, что ваш сервер не может достучаться до серверов Telegram (api.telegram.org).
+
+**Решение:**
+1. Получите рабочий HTTP или SOCKS5 прокси.
+2. Добавьте его в файл `.env`:
+   ```env
+   PROXY_URL=http://user:pass@ip:port
+   ```
+   или для SOCKS5:
+   ```env
+   PROXY_URL=socks5://user:pass@ip:port
+   ```
+3. Перезапустите бота: `sudo systemctl restart astro-bot`.
+
+---
+
+## Настройка автозапуска через Systemd
 Чтобы бот работал в фоновом режиме и автоматически перезапускался, создайте файл службы:
 
 ```bash
