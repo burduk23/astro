@@ -1,116 +1,122 @@
-# Astroproxy Referral Monitor Bot
+# Astro Monitor Bot (Astroproxy + TronGrid)
 
-Простой Telegram-бот для мониторинга реферального баланса в сервисе Astroproxy с уведомлениями при достижении $50 и выше.
-
-## Возможности
-- **Ручная проверка баланса**: Кнопка в меню для мгновенного получения текущего баланса.
-- **Автоматический мониторинг**: Бот проверяет баланс каждые 10 минут.
-- **Push-уведомления**: Бот пришлет сообщение, как только ваш баланс станет $\ge$ $50.
-- **Безопасность**: Доступ ограничен только вашим Telegram ID.
-
-## Предварительные требования
-- Python 3.8 или выше.
-- Токен Telegram бота (можно получить у [@BotFather](https://t.me/BotFather)).
-- API ключ Astroproxy.
-- Ваш Telegram user ID (можно узнать у [@userinfobot](https://t.me/userinfobot)).
+Телеграм-бот для автоматического мониторинга баланса **Astroproxy** и поступлений **USDT (TRC20)** на кошелек Tron.
 
 ---
 
-## Установка и настройка на сервере Ubuntu
+## 🚀 Установка на Ubuntu Server (Рекомендуется)
 
-### 1. Обновление системы и установка зависимостей
+### Шаг 1: Подготовка системы
+Обновите пакеты и установите необходимые зависимости:
 ```bash
 sudo apt update && sudo apt upgrade -y
-sudo apt install python3-pip python3-venv git -y
+sudo apt install git python3-pip python3-venv -y
 ```
 
-### 2. Клонирование репозитория
+### Шаг 2: Клонирование репозитория
 ```bash
-git clone <URL_ВАШЕГО_РЕПОЗИТОРИЯ>
-cd astroproxy-bot
+git clone https://github.com/ВАШ_ЛОГИН/astro.git 
+cd astro
 ```
 
-### 3. Настройка виртуального окружения
+### Шаг 3: Создание виртуального окружения
 ```bash
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Конфигурация
-Создайте файл `.env` на основе примера:
+### Шаг 4: Настройка конфигурации (.env и message.json)
+
+1.  **Создайте файл `.env`**:
+    ```bash
+    nano .env
+    ```
+    **Заполните следующие поля:**
+       `BOT_TOKEN`: Токен вашего бота от @BotFather.
+       `TELEGRAM_USER_ID`: Ваш Chat ID телеграм(куда слать отчеты).
+       `ASTRO_COOKIE`: Cookie сессии Astroproxy (из браузера).
+       `TRON_WALLET_ADDRESS`: Адрес вашего кошелька USDT TRC20 (начинается на T).
+       `TRONGRID_API_KEY`: (Опционально) Ключ API с trongrid.io.
+       `API_ID`:
+	   `API_HASH`: Получаются на [my.telegram.org](https://my.telegram.org).
+
+2.  **Настройте сообщение для вывода (`message.json`)**:
+    ```bash
+    nano message.json
+    ```
+    **Пример содержания:**
+    ```json
+    {
+      "ID": "",
+      "Message": ""
+    }
+    ```
+
+### Шаг 5: Первый запуск и Авторизация
+**Важно!** Telethon требует разовой авторизации. Запустите бота вручную:
 ```bash
-cp .env.example .env
-nano .env
+python3 bot.py
 ```
-Заполните ваши данные:
-- `BOT_TOKEN`: Токен вашего Telegram бота.
-- `ASTROPROXY_API_KEY`: Ваш API ключ Astroproxy.
-- `TELEGRAM_USER_ID`: Ваш числовой Telegram ID.
-- `PROXY_URL`: (Опционально) URL прокси, если сервер не может подключиться к Telegram напрямую.
+Введите номер телефона (в международном формате, например `+7999...`) и код подтверждения из Telegram. После появления сообщения "Бот запущен..." нажмите `Ctrl+C`.
 
----
-
-## Устранение неполадок
-
-### Ошибка: Request timeout error
-Если при запуске бота вы видите ошибку `aiogram.exceptions.TelegramNetworkError: Request timeout error`, это означает, что ваш сервер не может достучаться до серверов Telegram (api.telegram.org).
-
-**Решение:**
-1. Получите рабочий HTTP или SOCKS5 прокси.
-2. Добавьте его в файл `.env`:
-   ```env
-   PROXY_URL=http://user:pass@ip:port
-   ```
-   или для SOCKS5:
-   ```env
-   PROXY_URL=socks5://user:pass@ip:port
-   ```
-3. Перезапустите бота: `sudo systemctl restart astro-bot`.
-
----
-
-## Настройка автозапуска через Systemd
-Чтобы бот работал в фоновом режиме и автоматически перезапускался, создайте файл службы:
-
+### Шаг 6: Создание системного сервиса (astro)
+Чтобы бот работал 24/7, создайте сервис:
 ```bash
-sudo nano /etc/systemd/system/astro-bot.service
+sudo nano /etc/systemd/system/astro.service
 ```
-
-Вставьте следующее содержимое (замените `/home/ubuntu/astroproxy-bot` на ваш реальный путь к папке бота):
-
+**Вставьте текст (замените `user` на ваше имя пользователя):**
 ```ini
 [Unit]
-Description=Astroproxy Referral Bot
+Description=Astro Monitor Bot
 After=network.target
 
 [Service]
-User=ubuntu
-Group=ubuntu
-WorkingDirectory=/home/ubuntu/astroproxy-bot
-ExecStart=/home/ubuntu/astroproxy-bot/venv/bin/python bot.py
+User=root
+Group=root
+WorkingDirectory=/root/astro
+ExecStart=/root/astro/venv/bin/python bot.py
+
 Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 ```
-
-**Примечание:** Если ваше имя пользователя отличается от `ubuntu`, измените его в строках `User`, `Group` и путях.
-
-### 6. Включение и запуск службы
+**Обновите конфиги и запустите сервис:**
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable astro-bot
-sudo systemctl start astro-bot
+sudo systemctl enable astro
+sudo systemctl start astro
 ```
+---
 
-### 7. Управление службой
-- **Проверить статус**: `sudo systemctl status astro-bot`
-- **Просмотреть логи**: `journalctl -u astro-bot -f`
-- **Перезапустить**: `sudo systemctl restart astro-bot`
-- **Остановить**: `sudo systemctl stop astro-bot`
+## 🛠 Управление ботом на сервере
+*   `sudo systemctl daemon-reload` — обновить конфиги после создания файла.
+*   `sudo systemctl enable astro` — включить автозапуск при старте сервера.
+*   `sudo systemctl start astro` — запустить бота.
+*   `sudo systemctl restart astro` — **перезагрузить бота** (использовать после обновлений).
+*   `sudo systemctl status astro` — проверить, работает ли бот.
+*   `journalctl -u astro -f` — смотреть логи (вывод бота) в реальном времени.
 
 ---
 
-## Автор
-[Alex](https://github.com/yourusername)
+## 💻 Установка на Windows
+
+1.  **Подготовка**: Установите [Python 3.8+](https://www.python.org/downloads/) и [Git](https://git-scm.com/download/win).
+2.  **Клонирование**: `git clone https://github.com/ВАШ_ЛОГИН/ВАШ_РЕПОЗИТОРИЙ.git` в терминале.
+3.  **Окружение**:
+    ```powershell
+    python -m venv venv
+    .\venv\Scripts\activate
+    pip install -r requirements.txt
+    ```
+4.  **Конфигурация**: Создайте файлы `.env` и `message.json` в папке бота (см. описание в "Шаг 4" для Ubuntu).
+5.  **Запуск**: `python bot.py`. При первом запуске введите код подтверждения от Telegram.
+
+---
+
+## 📋 Основной функционал
+*   **Astroproxy**: Проверка баланса каждые 10 минут. При достижении $50 — уведомление в бота и автоотправка сообщения через Telethon.
+*   **Tron**: Проверка поступлений USDT каждые 60 секунд. Уведомление при любом пополнении баланса.
+*   **Кнопки**: Статистика и ручной тест автовывода.

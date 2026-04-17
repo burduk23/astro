@@ -1,4 +1,16 @@
 /.gemini
 /coding-guidelines
-updates.md
+.env
+*.session
+*.session-journal
+venv/
+__pycache__/
+*.pyc
+message.json
 .env.example
+.env.example
+ — копия.env
+.env.example
+message — копия.json
+updates.md
+куки.json
