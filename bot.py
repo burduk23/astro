@@ -7,6 +7,8 @@ from bs4 import BeautifulSoup
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiohttp import ClientSession
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -41,12 +43,56 @@ dp = Dispatcher()
 telethon_client = TelegramClient('user_session', int(API_ID), API_HASH) if API_ID and API_HASH else None
 
 previous_tron_balance = None
-auto_message_sent = False
+DATA_FILE = "data.json"
 
 ASTRO_URL = "https://astroproxy.com/dashboard/referral"
 
+# FSM States
+class BotStates(StatesGroup):
+    waiting_for_new_user = State()
+    waiting_for_test_msg = State()
+    waiting_for_test_target = State()
+
+def load_data():
+    if not os.path.exists(DATA_FILE):
+        default_data = {
+            "users": [],
+            "test_settings": {},
+            "auto_message_sent": False
+        }
+        if TELEGRAM_USER_ID and TELEGRAM_USER_ID.isdigit():
+            default_data["users"].append(int(TELEGRAM_USER_ID))
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(default_data, f, indent=4)
+        return default_data
+    with open(DATA_FILE, "r", encoding="utf-8") as f:
+        try:
+            return json.load(f)
+        except json.JSONDecodeError:
+            return {"users": [], "test_settings": {}, "auto_message_sent": False}
+
+def save_data(data):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+def is_user_allowed(user_id):
+    data = load_data()
+    return user_id in data.get("users", []) or str(user_id) == str(TELEGRAM_USER_ID)
+
+async def notify_all_users(text, parse_mode="Markdown"):
+    data = load_data()
+    users = set(data.get("users", []))
+    if TELEGRAM_USER_ID and TELEGRAM_USER_ID.isdigit():
+        users.add(int(TELEGRAM_USER_ID))
+    
+    for uid in users:
+        try:
+            await bot.send_message(chat_id=uid, text=text, parse_mode=parse_mode)
+        except Exception as e:
+            logger.error(f"Не удалось отправить уведомление пользователю {uid}: {e}")
+
 def load_message_data():
-    """Загружает ID и текст сообщения из файла message.json"""
+    """Загружает ID и текст сообщения из файла message.json (для реального вывода)"""
     try:
         with open("message.json", "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -83,7 +129,6 @@ async def get_tron_usdt_balance(client_session: ClientSession):
             trc20_tokens = account_info.get("trc20", [])
             
             for token_data in trc20_tokens:
-                # В trc20_tokens формат элементов может быть { "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t": "1000000" }
                 for contract_address, balance_str in token_data.items():
                     if contract_address == "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t":
                         return float(balance_str) / 1_000_000
@@ -142,28 +187,32 @@ async def get_referral_stats():
         logger.error(f"Ошибка при получении данных Astroproxy: {e}")
         return None
 
-def get_main_keyboard():
+def get_main_keyboard(user_id):
     builder = ReplyKeyboardBuilder()
     builder.button(text="💰 Проверить статистику")
     builder.button(text="🛠 Тест автовывода")
-    builder.adjust(1, 1)
+    builder.button(text="⚙️ Настройки")
+    if str(user_id) == str(TELEGRAM_USER_ID):
+        builder.button(text="👑 Админка")
+    builder.adjust(2, 2)
     return builder.as_markup(resize_keyboard=True)
 
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    if str(message.from_user.id) != TELEGRAM_USER_ID:
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()
+    if not is_user_allowed(message.from_user.id):
         return
     
     await message.answer(
         "Привет! Я мониторю реферальную статистику Astroproxy (каждые 10 мин) "
         "и баланс USDT в сети Tron (каждую минуту).\n"
         "Уведомлю при достижении $50 в Astroproxy или при поступлении депозита на кошелек Tron.",
-        reply_markup=get_main_keyboard()
+        reply_markup=get_main_keyboard(message.from_user.id)
     )
 
 @dp.message(F.text == "💰 Проверить статистику")
 async def manual_balance_check(message: types.Message):
-    if str(message.from_user.id) != TELEGRAM_USER_ID:
+    if not is_user_allowed(message.from_user.id):
         return
 
     m = await message.answer("🔄 Собираю данные с Astroproxy и TronGrid...")
@@ -177,7 +226,6 @@ async def manual_balance_check(message: types.Message):
     
     text = "📊 **Текущая статистика:**\n\n"
     
-    # Секция Astroproxy
     if stats is None:
         text += "❌ **Astroproxy:** Ошибка соединения.\n"
     elif stats.get("error") == "cookie_expired":
@@ -192,7 +240,6 @@ async def manual_balance_check(message: types.Message):
         
     text += "\n"
     
-    # Секция Tron
     if not TRON_WALLET_ADDRESS:
         text += "⚠️ **Tron:** Кошелек не настроен в .env (TRON_WALLET_ADDRESS)\n"
     elif tron_bal is not None:
@@ -204,15 +251,18 @@ async def manual_balance_check(message: types.Message):
 
 @dp.message(F.text == "🛠 Тест автовывода")
 async def test_auto_withdraw(message: types.Message):
-    if str(message.from_user.id) != TELEGRAM_USER_ID:
+    if not is_user_allowed(message.from_user.id):
         return
 
-    m = await message.answer("🔄 Тестирую отправку сообщения об автовыводе через Telethon...")
+    m = await message.answer("🔄 Тестирую отправку тестового сообщения через Telethon...")
     
-    target_id, message_text = load_message_data()
-    if not target_id or not message_text:
-        await m.edit_text("❌ **Ошибка:** Не удалось загрузить ID или Message из файла `message.json`.", parse_mode="Markdown")
-        return
+    data = load_data()
+    user_id_str = str(message.from_user.id)
+    user_settings = data.get("test_settings", {}).get(user_id_str, {})
+    
+    # По умолчанию отправляем самому пользователю (target_id = ID пользователя)
+    target_id = user_settings.get("target_id", user_id_str)
+    message_text = user_settings.get("message", "Это тестовое сообщение (по умолчанию).")
 
     if not telethon_client:
         await m.edit_text("❌ **Ошибка:** Telethon клиент не инициализирован (проверьте API_ID и API_HASH в .env).", parse_mode="Markdown")
@@ -220,59 +270,179 @@ async def test_auto_withdraw(message: types.Message):
 
     try:
         await telethon_client.send_message(int(target_id), message_text)
-        await m.edit_text(f"✅ **Тест успешен!**\nСообщение успешно отправлено пользователю `{target_id}`.", parse_mode="Markdown")
+        await m.edit_text(f"✅ **Тест успешен!**\nТестовое сообщение успешно отправлено пользователю `{target_id}`.", parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Ошибка при тестовой отправке: {e}")
         await m.edit_text(f"❌ **Ошибка при отправке:**\n`{e}`", parse_mode="Markdown")
 
+# === Админка ===
+@dp.message(F.text == "👑 Админка")
+async def cmd_admin(message: types.Message, state: FSMContext):
+    await state.clear()
+    if str(message.from_user.id) != str(TELEGRAM_USER_ID):
+        return
+    
+    data = load_data()
+    users_list = ", ".join(map(str, set(data.get("users", []))))
+    
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="➕ Добавить пользователя")
+    builder.button(text="🔙 Назад")
+    builder.adjust(1, 1)
+    
+    await message.answer(f"👑 **Панель администратора**\n\nТекущие пользователи бота:\n{users_list}", 
+                         reply_markup=builder.as_markup(resize_keyboard=True), parse_mode="Markdown")
+
+@dp.message(F.text == "➕ Добавить пользователя")
+async def add_user_start(message: types.Message, state: FSMContext):
+    if str(message.from_user.id) != str(TELEGRAM_USER_ID):
+        return
+    await message.answer("Введите Telegram ID нового пользователя (только цифры):", reply_markup=types.ReplyKeyboardRemove())
+    await state.set_state(BotStates.waiting_for_new_user)
+
+@dp.message(BotStates.waiting_for_new_user)
+async def add_user_finish(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("❌ ID должен состоять только из цифр. Попробуйте еще раз или нажмите /start.")
+        return
+    
+    new_user_id = int(message.text)
+    data = load_data()
+    if new_user_id not in data.get("users", []):
+        data.setdefault("users", []).append(new_user_id)
+        save_data(data)
+        await message.answer(f"✅ Пользователь `{new_user_id}` успешно добавлен!", 
+                             reply_markup=get_main_keyboard(message.from_user.id), parse_mode="Markdown")
+    else:
+        await message.answer("ℹ️ Этот пользователь уже есть в списке.", reply_markup=get_main_keyboard(message.from_user.id))
+    await state.clear()
+
+# === Настройки ===
+@dp.message(F.text == "⚙️ Настройки")
+async def cmd_settings(message: types.Message, state: FSMContext):
+    await state.clear()
+    if not is_user_allowed(message.from_user.id):
+        return
+    
+    data = load_data()
+    user_id_str = str(message.from_user.id)
+    user_settings = data.get("test_settings", {}).get(user_id_str, {})
+    
+    target = user_settings.get("target_id", user_id_str)
+    msg_text = user_settings.get("message", "Это тестовое сообщение (по умолчанию).")
+    
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="📝 Изменить текст тест. сообщения")
+    builder.button(text="🎯 Изменить получателя тест. сообщения")
+    builder.button(text="🔙 Назад")
+    builder.adjust(1, 1, 1)
+    
+    await message.answer(
+        f"⚙️ **Ваши настройки тестового сообщения:**\n\n"
+        f"Получатель (ID): `{target}`\n"
+        f"Текст:\n_{msg_text}_",
+        parse_mode="Markdown",
+        reply_markup=builder.as_markup(resize_keyboard=True)
+    )
+
+@dp.message(F.text == "📝 Изменить текст тест. сообщения")
+async def edit_test_msg_start(message: types.Message, state: FSMContext):
+    if not is_user_allowed(message.from_user.id):
+        return
+    await message.answer("Отправьте новый текст для вашего тестового сообщения:", reply_markup=types.ReplyKeyboardRemove())
+    await state.set_state(BotStates.waiting_for_test_msg)
+
+@dp.message(BotStates.waiting_for_test_msg)
+async def edit_test_msg_finish(message: types.Message, state: FSMContext):
+    data = load_data()
+    user_id_str = str(message.from_user.id)
+    if user_id_str not in data.get("test_settings", {}):
+        data.setdefault("test_settings", {})[user_id_str] = {}
+    
+    data["test_settings"][user_id_str]["message"] = message.text
+    save_data(data)
+    
+    await message.answer("✅ Текст тестового сообщения успешно сохранен!", reply_markup=get_main_keyboard(message.from_user.id))
+    await state.clear()
+
+@dp.message(F.text == "🎯 Изменить получателя тест. сообщения")
+async def edit_test_target_start(message: types.Message, state: FSMContext):
+    if not is_user_allowed(message.from_user.id):
+        return
+    await message.answer("Введите Telegram ID получателя для вашего тестового сообщения (или свой ID, чтобы получать самому):", reply_markup=types.ReplyKeyboardRemove())
+    await state.set_state(BotStates.waiting_for_test_target)
+
+@dp.message(BotStates.waiting_for_test_target)
+async def edit_test_target_finish(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("❌ ID должен состоять только из цифр. Попробуйте еще раз.")
+        return
+    
+    data = load_data()
+    user_id_str = str(message.from_user.id)
+    if user_id_str not in data.get("test_settings", {}):
+        data.setdefault("test_settings", {})[user_id_str] = {}
+    
+    data["test_settings"][user_id_str]["target_id"] = message.text
+    save_data(data)
+    
+    await message.answer("✅ Получатель тестового сообщения успешно сохранен!", reply_markup=get_main_keyboard(message.from_user.id))
+    await state.clear()
+
+@dp.message(F.text == "🔙 Назад")
+async def back_to_main(message: types.Message, state: FSMContext):
+    await state.clear()
+    if not is_user_allowed(message.from_user.id):
+        return
+    await message.answer("Главное меню", reply_markup=get_main_keyboard(message.from_user.id))
+
+
 async def scheduled_astro_check():
     """Ежеминутная (или раз в 10 минут) проверка Astroproxy."""
-    global auto_message_sent
-    
     stats = await get_referral_stats()
     if stats and not stats.get("error"):
         accumulated = stats['accumulated']
         
+        data = load_data()
+        auto_message_sent = data.get("auto_message_sent", False)
+        
         # Сброс флага, если баланс стал меньше 50
-        if accumulated < 50.0:
+        if accumulated < 50.0 and auto_message_sent:
+            data["auto_message_sent"] = False
+            save_data(data)
             auto_message_sent = False
             
         if accumulated >= 50.0:
             if not auto_message_sent:
-                # Уведомление в бота
-                await bot.send_message(
-                    chat_id=TELEGRAM_USER_ID,
-                    text=(
-                        "🔔 **Уведомление Astroproxy!**\n"
-                        f"Ваш реферальный баланс (НАКОПЛЕНО) достиг **${accumulated}**!\n\n"
-                        f"ОБЩИЙ: ${stats['total']}\n"
-                        f"ОПЛАЧЕНО: ${stats['paid']}"
-                    ),
-                    parse_mode="Markdown"
+                # Уведомление всем пользователям в бота
+                notify_text = (
+                    "🔔 **Уведомление Astroproxy! Средства накопились и ставятся на вывод.**\n"
+                    f"Ваш реферальный баланс (НАКОПЛЕНО) достиг **${accumulated}**!\n\n"
+                    f"ОБЩИЙ: ${stats['total']}\n"
+                    f"ОПЛАЧЕНО: ${stats['paid']}"
                 )
+                await notify_all_users(notify_text)
                 logger.info(f"Astroproxy уведомление отправлено! Накоплено: {accumulated}")
 
                 # Автовывод сообщения через Telethon (один раз)
                 if telethon_client:
+                    # Загружаем ИСХОДНЫЕ данные для реального автовывода (сообщение не меняется)
                     target_id, message_text = load_message_data()
                     if target_id and message_text:
                         try:
                             await telethon_client.send_message(int(target_id), message_text)
-                            auto_message_sent = True
                             
-                            await bot.send_message(
-                                chat_id=TELEGRAM_USER_ID,
-                                text=f"✅ **Автовывод!**\nСообщение успешно отправлено пользователю `{target_id}`.",
-                                parse_mode="Markdown"
-                            )
-                            logger.info(f"Сообщение об автовыводе отправлено пользователю {target_id}")
+                            data = load_data()
+                            data["auto_message_sent"] = True
+                            save_data(data)
+                            
+                            success_text = f"✅ **Автовывод инициирован!**\nСообщение на вывод успешно отправлено получателю `{target_id}`."
+                            await notify_all_users(success_text)
+                            logger.info(f"Сообщение об автовыводе отправлено получателю {target_id}")
                         except Exception as e:
                             logger.error(f"Ошибка автоотправки Telethon: {e}")
-                            await bot.send_message(
-                                chat_id=TELEGRAM_USER_ID,
-                                text=f"❌ **Ошибка автовывода!**\nНе удалось отправить сообщение: `{e}`",
-                                parse_mode="Markdown"
-                            )
+                            error_text = f"❌ **Ошибка автовывода!**\nНе удалось отправить сообщение на вывод: `{e}`"
+                            await notify_all_users(error_text)
 
 async def scheduled_tron_check():
     """Ежеминутный мониторинг баланса Tron."""
@@ -287,15 +457,12 @@ async def scheduled_tron_check():
         if previous_tron_balance is not None and current_balance > previous_tron_balance:
             diff = current_balance - previous_tron_balance
             if diff >= 0.01: # Игнорируем микро-изменения (пыль)
-                await bot.send_message(
-                    chat_id=TELEGRAM_USER_ID,
-                    text=(
-                        f"🟢 **Пополнение на кошелек Tron!**\n"
-                        f"Ваш баланс USDT увеличился на **${diff:.2f}**\n\n"
-                        f"Текущий баланс USDT: **${current_balance:.2f}**"
-                    ),
-                    parse_mode="Markdown"
+                text = (
+                    f"🟢 **Пополнение на кошелек Tron!**\n"
+                    f"Ваш баланс USDT увеличился на **${diff:.2f}**\n\n"
+                    f"Текущий баланс USDT: **${current_balance:.2f}**"
                 )
+                await notify_all_users(text)
                 logger.info(f"Tron пополнение обнаружено: +{diff}. Текущий баланс: {current_balance}")
         previous_tron_balance = current_balance
 
