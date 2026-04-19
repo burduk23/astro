@@ -33,14 +33,16 @@ pip install -r requirements.txt
     nano .env
     ```
     **Заполните следующие поля:**
-       `BOT_TOKEN`: Токен вашего бота от @BotFather.
-       `TELEGRAM_USER_ID`: Ваш Chat ID телеграм(куда слать отчеты).
-       `ASTRO_COOKIE`: Cookie сессии Astroproxy (из браузера).
-       `TRON_WALLET_ADDRESS`: Адрес вашего кошелька USDT TRC20 (начинается на T).
-       `TRONGRID_API_KEY`: (Опционально) Ключ API с trongrid.io.
-       `API_ID`:
-	   `API_HASH`: Получаются на [my.telegram.org](https://my.telegram.org).
-
+    ```
+    BOT_TOKEN=
+    TELEGRAM_USER_ID=
+    ASTRO_COOKIE=
+    PROXY_URL=
+    TRON_WALLET_ADDRESS=
+    TRONGRID_API_KEY=
+    API_ID=
+    API_HASH=
+       
 2.  **Настройте сообщение для вывода (`message.json`)**:
     ```bash
     nano message.json
