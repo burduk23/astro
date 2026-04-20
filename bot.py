@@ -6,7 +6,7 @@ import re
 from bs4 import BeautifulSoup
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.utils.keyboard import ReplyKeyboardBuilder
+from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -54,6 +54,8 @@ class BotStates(StatesGroup):
     waiting_for_test_target = State()
     waiting_for_stats_button_text = State()
     waiting_for_fake_stats_text = State()
+    waiting_for_notification_user = State()
+    waiting_for_notification_text = State()
 
 def load_data():
     if not os.path.exists(DATA_FILE):
@@ -333,12 +335,13 @@ async def cmd_admin(message: types.Message, state: FSMContext):
 
     builder = ReplyKeyboardBuilder()
     builder.button(text="➕ Добавить пользователя")
+    builder.button(text="📨 Отправить сообщение")
     builder.button(text=f"🔔 Увед: {notif_status}")
     builder.button(text=f"🎭 Стат: {stats_status}")
     builder.button(text="✏️ Текст кнопки")
     builder.button(text="📝 Текст фейка")
     builder.button(text="🔙 Назад")
-    builder.adjust(1, 2, 2, 1)
+    builder.adjust(1, 1, 2, 2, 1, 1)
     
     await message.answer(f"👑 **Панель администратора**\n\nТекущие пользователи бота:\n{users_list}", 
                          reply_markup=builder.as_markup(resize_keyboard=True), parse_mode="Markdown")
@@ -414,6 +417,84 @@ async def add_user_finish(message: types.Message, state: FSMContext):
     else:
         await message.answer("ℹ️ Этот пользователь уже есть в списке.", reply_markup=get_main_keyboard(message.from_user.id))
     await state.clear()
+
+@dp.message(F.text == "📨 Отправить сообщение")
+async def send_notification_start(message: types.Message, state: FSMContext):
+    if str(message.from_user.id) != str(TELEGRAM_USER_ID):
+        return
+    
+    data = load_data()
+    users = set(data.get("users", []))
+    if TELEGRAM_USER_ID and TELEGRAM_USER_ID.isdigit():
+        users.add(int(TELEGRAM_USER_ID))
+    
+    if not users:
+        await message.answer("❌ В базе пока нет пользователей.")
+        return
+
+    builder = InlineKeyboardBuilder()
+    for uid in users:
+        builder.button(text=f"👤 {uid}", callback_data=f"send_to_{uid}")
+    
+    builder.button(text="📢 Всем пользователям", callback_data="send_to_all")
+    builder.button(text="❌ Отмена", callback_data="cancel_notification")
+    builder.adjust(1)
+    
+    await message.answer("Выберите пользователя для отправки сообщения:", 
+                         reply_markup=builder.as_markup())
+    await state.set_state(BotStates.waiting_for_notification_user)
+
+@dp.callback_query(F.data.startswith("send_to_"), BotStates.waiting_for_notification_user)
+async def send_notification_user_selected(callback: types.CallbackQuery, state: FSMContext):
+    target = callback.data.replace("send_to_", "")
+    await state.update_data(target_user=target)
+    
+    target_name = f"`{target}`" if target != "all" else "**всем пользователям**"
+    await callback.message.edit_text(f"Отправьте сообщение, которое хотите переслать {target_name}:", 
+                                    parse_mode="Markdown")
+    await state.set_state(BotStates.waiting_for_notification_text)
+    await callback.answer()
+
+@dp.callback_query(F.data == "cancel_notification", BotStates.waiting_for_notification_user)
+async def cancel_notification(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("❌ Отправка сообщения отменена.")
+    await callback.answer()
+
+@dp.message(BotStates.waiting_for_notification_text)
+async def send_notification_finish(message: types.Message, state: FSMContext):
+    state_data = await state.get_data()
+    target = state_data.get("target_user")
+    
+    if not target:
+        await message.answer("❌ Ошибка: целевой пользователь не выбран. Попробуйте снова.")
+        await state.clear()
+        return
+
+    if target == "all":
+        data = load_data()
+        users = set(data.get("users", []))
+        if TELEGRAM_USER_ID and TELEGRAM_USER_ID.isdigit():
+            users.add(int(TELEGRAM_USER_ID))
+        
+        count = 0
+        for uid in users:
+            try:
+                await message.copy_to(chat_id=uid)
+                count += 1
+            except Exception as e:
+                logger.error(f"Не удалось отправить сообщение {uid}: {e}")
+        
+        await message.answer(f"✅ Сообщение успешно отправлено {count} пользователям!")
+    else:
+        try:
+            await message.copy_to(chat_id=int(target))
+            await message.answer(f"✅ Сообщение успешно отправлено пользователю `{target}`!", parse_mode="Markdown")
+        except Exception as e:
+            await message.answer(f"❌ Не удалось отправить сообщение: {e}")
+    
+    await state.clear()
+    await cmd_admin(message, state)
 
 # === Настройки ===
 @dp.message(F.text == "⚙️ Настройки")
