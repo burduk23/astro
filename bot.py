@@ -52,13 +52,19 @@ class BotStates(StatesGroup):
     waiting_for_new_user = State()
     waiting_for_test_msg = State()
     waiting_for_test_target = State()
+    waiting_for_stats_button_text = State()
+    waiting_for_fake_stats_text = State()
 
 def load_data():
     if not os.path.exists(DATA_FILE):
         default_data = {
             "users": [],
             "test_settings": {},
-            "auto_message_sent": False
+            "auto_message_sent": False,
+            "notifications_only_for_admin": False,
+            "fake_stats_enabled": False,
+            "fake_stats_text": "🔄 Статистика временно недоступна. Попробуйте позже.",
+            "stats_button_text": "💰 Проверить статистику"
         }
         if TELEGRAM_USER_ID and TELEGRAM_USER_ID.isdigit():
             default_data["users"].append(int(TELEGRAM_USER_ID))
@@ -67,9 +73,29 @@ def load_data():
         return default_data
     with open(DATA_FILE, "r", encoding="utf-8") as f:
         try:
-            return json.load(f)
+            data = json.load(f)
         except json.JSONDecodeError:
-            return {"users": [], "test_settings": {}, "auto_message_sent": False}
+            data = {"users": [], "test_settings": {}, "auto_message_sent": False}
+    
+    # Ensure new fields exist
+    changed = False
+    if "notifications_only_for_admin" not in data:
+        data["notifications_only_for_admin"] = False
+        changed = True
+    if "fake_stats_enabled" not in data:
+        data["fake_stats_enabled"] = False
+        changed = True
+    if "fake_stats_text" not in data:
+        data["fake_stats_text"] = "🔄 Статистика временно недоступна. Попробуйте позже."
+        changed = True
+    if "stats_button_text" not in data:
+        data["stats_button_text"] = "💰 Проверить статистику"
+        changed = True
+    
+    if changed:
+        save_data(data)
+    
+    return data
 
 def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
@@ -81,9 +107,12 @@ def is_user_allowed(user_id):
 
 async def notify_all_users(text, parse_mode="Markdown"):
     data = load_data()
-    users = set(data.get("users", []))
-    if TELEGRAM_USER_ID and TELEGRAM_USER_ID.isdigit():
-        users.add(int(TELEGRAM_USER_ID))
+    if data.get("notifications_only_for_admin"):
+        users = {int(TELEGRAM_USER_ID)} if TELEGRAM_USER_ID and TELEGRAM_USER_ID.isdigit() else set()
+    else:
+        users = set(data.get("users", []))
+        if TELEGRAM_USER_ID and TELEGRAM_USER_ID.isdigit():
+            users.add(int(TELEGRAM_USER_ID))
     
     for uid in users:
         try:
@@ -188,8 +217,11 @@ async def get_referral_stats():
         return None
 
 def get_main_keyboard(user_id):
+    data = load_data()
+    stats_btn_text = data.get("stats_button_text", "💰 Проверить статистику")
+    
     builder = ReplyKeyboardBuilder()
-    builder.button(text="💰 Проверить статистику")
+    builder.button(text=stats_btn_text)
     builder.button(text="🛠 Тест автовывода")
     builder.button(text="⚙️ Настройки")
     if str(user_id) == str(TELEGRAM_USER_ID):
@@ -210,12 +242,21 @@ async def cmd_start(message: types.Message, state: FSMContext):
         reply_markup=get_main_keyboard(message.from_user.id)
     )
 
-@dp.message(F.text == "💰 Проверить статистику")
+@dp.message(lambda m: m.text == load_data().get("stats_button_text", "💰 Проверить статистику"))
 async def manual_balance_check(message: types.Message):
     if not is_user_allowed(message.from_user.id):
         return
 
+    data = load_data()
+    is_admin = str(message.from_user.id) == str(TELEGRAM_USER_ID)
+    
     m = await message.answer("🔄 Собираю данные с Astroproxy и TronGrid...")
+
+    if not is_admin and data.get("fake_stats_enabled"):
+        await asyncio.sleep(2) # Имитация работы для реализма
+        fake_text = data.get("fake_stats_text", "🔄 Статистика временно недоступна. Попробуйте позже.")
+        await m.edit_text(fake_text)
+        return
     
     astro_task = asyncio.create_task(get_referral_stats())
     
@@ -278,20 +319,77 @@ async def test_auto_withdraw(message: types.Message):
 # === Админка ===
 @dp.message(F.text == "👑 Админка")
 async def cmd_admin(message: types.Message, state: FSMContext):
-    await state.clear()
+    if state:
+        await state.clear()
     if str(message.from_user.id) != str(TELEGRAM_USER_ID):
         return
     
     data = load_data()
     users_list = ", ".join(map(str, set(data.get("users", []))))
     
+    # Флаги для кнопок
+    notif_status = "Админ" if data.get("notifications_only_for_admin") else "Все"
+    stats_status = "Фейк" if data.get("fake_stats_enabled") else "Реал"
+
     builder = ReplyKeyboardBuilder()
     builder.button(text="➕ Добавить пользователя")
+    builder.button(text=f"🔔 Увед: {notif_status}")
+    builder.button(text=f"🎭 Стат: {stats_status}")
+    builder.button(text="✏️ Текст кнопки")
+    builder.button(text="📝 Текст фейка")
     builder.button(text="🔙 Назад")
-    builder.adjust(1, 1)
+    builder.adjust(1, 2, 2, 1)
     
     await message.answer(f"👑 **Панель администратора**\n\nТекущие пользователи бота:\n{users_list}", 
                          reply_markup=builder.as_markup(resize_keyboard=True), parse_mode="Markdown")
+
+@dp.message(F.text.startswith("🔔 Увед:"))
+async def toggle_notifications(message: types.Message, state: FSMContext):
+    if str(message.from_user.id) != str(TELEGRAM_USER_ID):
+        return
+    data = load_data()
+    data["notifications_only_for_admin"] = not data.get("notifications_only_for_admin", False)
+    save_data(data)
+    await cmd_admin(message, state)
+
+@dp.message(F.text.startswith("🎭 Стат:"))
+async def toggle_fake_stats(message: types.Message, state: FSMContext):
+    if str(message.from_user.id) != str(TELEGRAM_USER_ID):
+        return
+    data = load_data()
+    data["fake_stats_enabled"] = not data.get("fake_stats_enabled", False)
+    save_data(data)
+    await cmd_admin(message, state)
+
+@dp.message(F.text == "✏️ Текст кнопки")
+async def edit_button_text_start(message: types.Message, state: FSMContext):
+    if str(message.from_user.id) != str(TELEGRAM_USER_ID):
+        return
+    await message.answer("Введите новый текст для кнопки статистики:", reply_markup=types.ReplyKeyboardRemove())
+    await state.set_state(BotStates.waiting_for_stats_button_text)
+
+@dp.message(BotStates.waiting_for_stats_button_text)
+async def edit_button_text_finish(message: types.Message, state: FSMContext):
+    data = load_data()
+    data["stats_button_text"] = message.text
+    save_data(data)
+    await message.answer(f"✅ Текст кнопки изменен на: {message.text}")
+    await cmd_admin(message, state)
+
+@dp.message(F.text == "📝 Текст фейка")
+async def edit_fake_text_start(message: types.Message, state: FSMContext):
+    if str(message.from_user.id) != str(TELEGRAM_USER_ID):
+        return
+    await message.answer("Введите текст, который будут видеть пользователи в режиме 'Фейк':", reply_markup=types.ReplyKeyboardRemove())
+    await state.set_state(BotStates.waiting_for_fake_stats_text)
+
+@dp.message(BotStates.waiting_for_fake_stats_text)
+async def edit_fake_text_finish(message: types.Message, state: FSMContext):
+    data = load_data()
+    data["fake_stats_text"] = message.text
+    save_data(data)
+    await message.answer("✅ Фейковый текст статистики обновлен.")
+    await cmd_admin(message, state)
 
 @dp.message(F.text == "➕ Добавить пользователя")
 async def add_user_start(message: types.Message, state: FSMContext):
