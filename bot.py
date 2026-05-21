@@ -70,8 +70,7 @@ def get_telethon_proxy():
             'port': parsed.port,
             'username': parsed.username,
             'password': parsed.password,
-            'rdns': False,  # Отключаем удаленный DNS для лучшей совместимости
-            'timeout': 30   # Увеличиваем таймаут до 30 секунд
+            'rdns': False  # Отключаем удаленный DNS для лучшей совместимости
         }
     except Exception as e:
         logger.error(f"Ошибка при парсинге прокси для Telethon: {e}")
@@ -241,7 +240,7 @@ async def get_referral_stats():
                 text_content = soup.get_text(separator=" ", strip=True)
                 
                 def extract_value(ru_key, en_key, text):
-                    pattern = rf'({ru_key}|{en_key})[^\d]*([\d\.,]+)'
+                    pattern = rf'({ru_key}|{en_key})\s*[^\d]*\s*([\d\.,]+)'
                     match = re.search(pattern, text, re.IGNORECASE)
                     if match:
                         val_str = match.group(2).replace(',', '.')
@@ -254,6 +253,9 @@ async def get_referral_stats():
                 total = extract_value("ОБЩИЙ", "TOTAL", text_content)
                 accumulated = extract_value("НАКОПЛЕНО", "ACCUMULATED", text_content)
                 paid = extract_value("ОПЛАЧЕНО", "PAID", text_content)
+                
+                if total == 0.0 and accumulated == 0.0 and paid == 0.0:
+                    logger.info(f"Astroproxy stats are all 0.0. Content snippet: {text_content[:500]}")
                 
                 return {
                     "total": total,
