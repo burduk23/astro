@@ -70,7 +70,7 @@ def get_telethon_proxy():
             'port': parsed.port,
             'username': parsed.username,
             'password': parsed.password,
-            'rdns': False  # Отключаем удаленный DNS для лучшей совместимости
+            'rdns': True  # Включаем удаленный DNS для SOCKS5 (часто требуется для Telegram)
         }
     except Exception as e:
         logger.error(f"Ошибка при парсинге прокси для Telethon: {e}")
@@ -223,9 +223,11 @@ async def get_referral_stats():
         "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
     }
     
+    logger.info("Запрос статистики Astroproxy...")
     try:
         async with get_client_session() as session:
             async with session.get(ASTRO_URL, headers=headers) as response:
+                logger.info(f"Astroproxy ответ: {response.status}")
                 if response.status != 200:
                     logger.error(f"Ошибка запроса Astroproxy: {response.status}")
                     return None
@@ -255,7 +257,9 @@ async def get_referral_stats():
                 paid = extract_value("ОПЛАЧЕНО", "PAID", text_content)
                 
                 if total == 0.0 and accumulated == 0.0 and paid == 0.0:
-                    logger.info(f"Astroproxy stats are all 0.0. Content snippet: {text_content[:500]}")
+                    logger.info(f"Astroproxy stats are all 0.0. Content snippet (500 chars): {text_content[:500]}")
+                else:
+                    logger.info(f"Astroproxy stats: total={total}, acc={accumulated}, paid={paid}")
                 
                 return {
                     "total": total,
@@ -626,6 +630,7 @@ async def back_to_main(message: types.Message, state: FSMContext):
 
 async def scheduled_astro_check():
     """Ежеминутная (или раз в 10 минут) проверка Astroproxy."""
+    logger.info("Запуск запланированной проверки Astroproxy...")
     stats = await get_referral_stats()
     if stats and not stats.get("error"):
         accumulated = stats['accumulated']
@@ -705,7 +710,16 @@ async def main():
     telethon_proxy = get_telethon_proxy()
     if API_ID and API_HASH and API_ID.strip().isdigit() and API_HASH.strip():
         try:
-            telethon_client = TelegramClient('user_session', int(API_ID), API_HASH, proxy=telethon_proxy)
+            # Увеличиваем количество попыток подключения и используем ConnectionTcpMTProxy
+            # для потенциально лучшей работы через некоторые прокси
+            telethon_client = TelegramClient(
+                'user_session', 
+                int(API_ID), 
+                API_HASH, 
+                proxy=telethon_proxy,
+                connection_retries=None, # Бесконечные попытки при запуске
+                retry_delay=5
+            )
             logger.info("Запуск сессии Telethon...")
             await telethon_client.start()
         except Exception as e:
