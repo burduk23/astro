@@ -3,5 +3,6 @@ aiohttp
 python-dotenv
 apscheduler
 aiohttp-socks
+PySocks
 beautifulsoup4
 telethon

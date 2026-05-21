@@ -1,0 +1,11 @@
+{
+    "users": [
+        5381999598
+    ],
+    "test_settings": {},
+    "auto_message_sent": false,
+    "notifications_only_for_admin": true,
+    "fake_stats_enabled": false,
+    "fake_stats_text": "🔄 Статистика временно недоступна. Попробуйте позже.",
+    "stats_button_text": "💰 Проверить статистику"
+}

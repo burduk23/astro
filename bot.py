@@ -3,6 +3,8 @@ import os
 import json
 import logging
 import re
+import urllib.parse
+import socks
 from bs4 import BeautifulSoup
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -11,6 +13,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiohttp import ClientSession
+from aiohttp_socks import ProxyConnector
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 from telethon import TelegramClient
@@ -35,12 +38,54 @@ if not all([BOT_TOKEN, TELEGRAM_USER_ID, ASTRO_COOKIE]):
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-session = AiohttpSession(proxy=PROXY_URL) if PROXY_URL else None
-bot = Bot(token=BOT_TOKEN, session=session)
-dp = Dispatcher()
+def get_proxy_url():
+    if not PROXY_URL or not PROXY_URL.strip():
+        return None
+    proxy = PROXY_URL.strip()
+    if "://" not in proxy:
+        proxy = "http://" + proxy
+    logger.info(f"Используется прокси: {proxy.split('@')[-1]}") # Логируем только хост:порт
+    return proxy
 
-# Инициализация клиента Telethon
-telethon_client = TelegramClient('user_session', int(API_ID), API_HASH) if API_ID and API_HASH else None
+def get_telethon_proxy():
+    proxy_url = get_proxy_url()
+    if not proxy_url:
+        return None
+    
+    try:
+        import socks
+        parsed = urllib.parse.urlparse(proxy_url)
+        scheme = parsed.scheme.lower()
+        if "socks5" in scheme:
+            proxy_type = socks.SOCKS5
+        elif "socks4" in scheme:
+            proxy_type = socks.SOCKS4
+        else:
+            proxy_type = socks.HTTP
+            
+        logger.info(f"Настройка Telethon прокси: тип={scheme}, хост={parsed.hostname}, порт={parsed.port}")
+        return {
+            'proxy_type': proxy_type,
+            'addr': parsed.hostname,
+            'port': parsed.port,
+            'username': parsed.username,
+            'password': parsed.password,
+            'rdns': False,  # Отключаем удаленный DNS для лучшей совместимости
+            'timeout': 30   # Увеличиваем таймаут до 30 секунд
+        }
+    except Exception as e:
+        logger.error(f"Ошибка при парсинге прокси для Telethon: {e}")
+        return None
+
+# Глобальные переменные (инициализируются в main)
+bot = None
+dp = Dispatcher()
+telethon_client = None
+
+def get_client_session():
+    proxy = get_proxy_url()
+    connector = ProxyConnector.from_url(proxy) if proxy else None
+    return ClientSession(connector=connector)
 
 previous_tron_balance = None
 DATA_FILE = "data.json"
@@ -108,6 +153,7 @@ def is_user_allowed(user_id):
     return user_id in data.get("users", []) or str(user_id) == str(TELEGRAM_USER_ID)
 
 async def notify_all_users(text, parse_mode="Markdown"):
+    global bot
     data = load_data()
     if data.get("notifications_only_for_admin"):
         users = {int(TELEGRAM_USER_ID)} if TELEGRAM_USER_ID and TELEGRAM_USER_ID.isdigit() else set()
@@ -179,7 +225,7 @@ async def get_referral_stats():
     }
     
     try:
-        async with ClientSession() as session:
+        async with get_client_session() as session:
             async with session.get(ASTRO_URL, headers=headers) as response:
                 if response.status != 200:
                     logger.error(f"Ошибка запроса Astroproxy: {response.status}")
@@ -262,7 +308,7 @@ async def manual_balance_check(message: types.Message):
     
     astro_task = asyncio.create_task(get_referral_stats())
     
-    async with ClientSession() as client_session:
+    async with get_client_session() as client_session:
         tron_bal = await get_tron_usdt_balance(client_session)
         
     stats = await astro_task
@@ -629,7 +675,7 @@ async def scheduled_tron_check():
     if not TRON_WALLET_ADDRESS:
         return
         
-    async with ClientSession() as client_session:
+    async with get_client_session() as client_session:
         current_balance = await get_tron_usdt_balance(client_session)
         
     if current_balance is not None:
@@ -646,11 +692,23 @@ async def scheduled_tron_check():
         previous_tron_balance = current_balance
 
 async def main():
-    # Запуск клиента Telethon
-    if telethon_client:
-        logger.info("Запуск сессии Telethon...")
-        await telethon_client.start()
-        
+    global bot, telethon_client
+    
+    # Инициализация сессии и бота внутри цикла событий
+    proxy_url = get_proxy_url()
+    session = AiohttpSession(proxy=proxy_url) if proxy_url else None
+    bot = Bot(token=BOT_TOKEN, session=session)
+
+    # Инициализация клиента Telethon
+    telethon_proxy = get_telethon_proxy()
+    if API_ID and API_HASH and API_ID.strip().isdigit() and API_HASH.strip():
+        try:
+            telethon_client = TelegramClient('user_session', int(API_ID), API_HASH, proxy=telethon_proxy)
+            logger.info("Запуск сессии Telethon...")
+            await telethon_client.start()
+        except Exception as e:
+            logger.error(f"Ошибка инициализации Telethon: {e}")
+
     scheduler = AsyncIOScheduler()
     scheduler.add_job(scheduled_astro_check, "interval", minutes=10)
     scheduler.add_job(scheduled_tron_check, "interval", minutes=1)
